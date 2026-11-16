@@ -1,0 +1,41 @@
+name: Publish verified Windows installer
+on:
+  push:
+    branches: [main]
+    paths: [windows-transfer.json]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish the exact validated build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if (!(Test-Path 'windows-transfer.json')) { Write-Output 'No pending transfer.'; exit 0 }
+          $transfer=Get-Content 'windows-transfer.json' -Raw | ConvertFrom-Json
+          Write-Output "::add-mask::$($transfer.installer_url)"
+          Write-Output "::add-mask::$($transfer.validation_url)"
+          if ($transfer.feed.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release version' }
+          $folder=Join-Path $env:RUNNER_TEMP 'verified-windows'
+          New-Item -ItemType Directory -Force $folder | Out-Null
+          $installer=Join-Path $folder 'Scriptorium-Setup.exe'
+          $validation=Join-Path $folder 'Windows-validation.zip'
+          Invoke-WebRequest $transfer.installer_url -OutFile $installer
+          Invoke-WebRequest $transfer.validation_url -OutFile $validation
+          $hash=(Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $transfer.feed.sha256 -or (Get-Item $installer).Length -ne $transfer.feed.bytes) { throw 'Installer verification failed' }
+          if ((Get-FileHash $validation -Algorithm SHA256).Hash.ToLowerInvariant() -ne $transfer.validation_sha256) { throw 'Validation archive verification failed' }
+          $transfer.feed | ConvertTo-Json -Depth 10 | Set-Content "$folder/windows-update.json" -Encoding utf8NoBOM
+          "$hash  Scriptorium-Setup.exe" | Set-Content "$folder/SHA256SUMS.txt" -Encoding utf8NoBOM
+          $transfer.notes | Set-Content "$folder/RELEASE-NOTES.md" -Encoding utf8NoBOM
+          $tag="windows-v$($transfer.feed.version)"
+          gh release create $tag $installer $validation "$folder/windows-update.json" "$folder/SHA256SUMS.txt" --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Scriptorium $($transfer.feed.version) for Windows" --notes-file "$folder/RELEASE-NOTES.md" --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
+          "Published $tag with SHA-256 $hash" >> $env:GITHUB_STEP_SUMMARY
