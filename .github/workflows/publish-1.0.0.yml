@@ -1,0 +1,42 @@
+name: One-time Scriptorium 1.0.0 asset upload
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  upload-fixed-assets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: release-staging-1.0.0
+          persist-credentials: false
+      - name: Reconstruct and verify approved public binaries
+        run: |
+          python3 - <<'PYCODE'
+          import pathlib,hashlib,json
+          root=pathlib.Path('release-assets')
+          approved={
+            'Scriptorium-1.0.0-arm64.apk':'e0b4476fd8a877398b0fd4a08309bd48154adc5b45a48879ee5d1d2341725d2b',
+            'Scriptorium-Setup.exe':'ca2e76f766a324fd5128541bc36fda7c7da9e06b0d9cd48f7e12c2b02bba99d0'}
+          for name,expected in approved.items():
+            parts=sorted(root.glob(name+'.part[0-9][0-9][0-9]'))
+            assert parts
+            with pathlib.Path(name).open('wb') as out:
+              for part in parts:out.write(part.read_bytes())
+            assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==expected
+          android={'schema':1,'channel':'stable','packageName':'app.scriptorium.android','versionName':'1.0.0','versionCode':44,'apkUrl':'https://github.com/bdizzle26/Scriptorium-Updates/releases/download/v1.0.0/Scriptorium-1.0.0-arm64.apk','sha256':approved['Scriptorium-1.0.0-arm64.apk'],'signingCertificateSha256':'a52597d223bdb132f99c945de96d901ef69898a0710a06e9e34ee15acebb3753','notes':'Fresh signing baseline; back up before replacing a differently signed canonical installation.'}
+          windows={'version':'1.0.0','releaseEpoch':1,'platform':'win32','arch':'x64','bytes':pathlib.Path('Scriptorium-Setup.exe').stat().st_size,'sha256':approved['Scriptorium-Setup.exe'],'url':'https://github.com/bdizzle26/Scriptorium-Updates/releases/download/windows-v1.0.0/Scriptorium-Setup.exe','notes':'Windows1.0.0; opt-in checks and confirmed installation.'}
+          pathlib.Path('latest.json').write_text(json.dumps(android,indent=2))
+          pathlib.Path('windows-update.json').write_text(json.dumps(windows,indent=2))
+          pathlib.Path('SHA256SUMS.txt').write_text(''.join(value+'  '+name+'\n' for name,value in approved.items()))
+          PYCODE
+      - name: Upload only these assets to the existing drafts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REPOSITORY" = 'bdizzle26/Scriptorium-Updates'
+          test "$(gh release view v1.0.0 --json isDraft --jq .isDraft)" = true
+          test "$(gh release view windows-v1.0.0 --json isDraft --jq .isDraft)" = true
+          gh release upload v1.0.0 Scriptorium-1.0.0-arm64.apk latest.json SHA256SUMS.txt --clobber
+          gh release upload windows-v1.0.0 Scriptorium-Setup.exe windows-update.json SHA256SUMS.txt --clobber
